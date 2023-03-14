@@ -65,7 +65,7 @@ _MISSING_FLUENT_DATASOURCES_ERRORS: Final[List[PydanticErrorDict]] = [
 class GxConfig(FluentBaseModel):
     """Represents the full fluent configuration file."""
 
-    fluent_datasources: Dict[str, Datasource] = Field(
+    fluent_datasources: List[Datasource] = Field(
         ..., description=_FLUENT_STYLE_DESCRIPTION
     )
 
@@ -78,7 +78,7 @@ class GxConfig(FluentBaseModel):
     }
 
     @property
-    def datasources(self) -> Dict[str, Datasource]:
+    def datasources(self) -> List[Datasource]:
         return self.fluent_datasources
 
     class Config:
@@ -87,46 +87,36 @@ class GxConfig(FluentBaseModel):
     # noinspection PyNestedDecorators
     @validator("fluent_datasources", pre=True)
     @classmethod
-    def _load_datasource_subtype(cls, v: Dict[str, dict]):
+    def _load_datasource_subtype(cls, v: List[dict]):
         logger.info(f"Loading 'datasources' ->\n{pf(v, depth=2)}")
-        loaded_datasources: Dict[str, Datasource] = {}
+        loaded_datasources: List[Datasource] = []
 
-        for ds_key, config in v.items():
+        for config in v:
+            # TODO: (kilo59 122222) ideally these would be raised by `Datasource` validation
+            # https://github.com/pydantic/pydantic/issues/734
+            ds_name: str = config.get("name", "")
+            if not ds_name:
+                raise ValueError("'Datasource must contain a 'name' entry.")
+
             ds_type_name: str = config.get("type", "")
             if not ds_type_name:
-                # TODO: (kilo59 122222) ideally this would be raised by `Datasource` validation
-                # https://github.com/pydantic/pydantic/issues/734
-                raise ValueError(f"'{ds_key}' is missing a 'type' entry")
+                raise ValueError(f"Datasource '{ds_name}' is missing a 'type' entry.")
 
             try:
                 ds_type: Type[Datasource] = _SourceFactories.type_lookup[ds_type_name]
-                logger.debug(f"Instantiating '{ds_key}' as {ds_type}")
+                logger.debug(f"Instantiating '{ds_name}' as {ds_type}")
             except KeyError as type_lookup_err:
                 raise ValueError(
-                    f"'{ds_key}' has unsupported 'type' - {type_lookup_err}"
+                    f"'{ds_name}' has unsupported 'type' - {type_lookup_err}"
                 ) from type_lookup_err
 
-            if "name" in config:
-                ds_name: str = config["name"]
-                if ds_name != ds_key:
-                    raise ValueError(
-                        f'Datasource key "{ds_key}" is different from name "{ds_name}" in its configuration.'
-                    )
-            else:
-                config["name"] = ds_key
-
             if "assets" not in config:
-                config["assets"] = {}
+                config["assets"] = []
 
-            for asset_key, asset_config in config["assets"].items():
-                if "name" in asset_config:
-                    asset_name: str = asset_config["name"]
-                    if asset_name != asset_key:
-                        raise ValueError(
-                            f'DataAsset key "{asset_key}" is different from name "{asset_name}" in its configuration.'
-                        )
-                else:
-                    asset_config["name"] = asset_key
+            for asset_config in config["assets"]:
+                asset_name: str = asset_config.get("name", "")
+                if not asset_name:
+                    raise ValueError("'DataAsset must contain a 'name' entry.")
 
             datasource = ds_type(**config)
 
@@ -139,7 +129,7 @@ class GxConfig(FluentBaseModel):
                 datasource.name != DEFAULT_PANDAS_DATASOURCE_NAME
                 or len(datasource.assets) > 0
             ):
-                loaded_datasources[datasource.name] = datasource
+                loaded_datasources.append(datasource)
 
                 # TODO: move this to a different 'validator' method
                 # attach the datasource to the nested assets, avoiding recursion errors
